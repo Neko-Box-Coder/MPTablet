@@ -709,8 +709,12 @@ EasyTabResult EasyTab_Load(Display* Disp, Window Win)
 
     for (int32_t i = 0; i < Count; i++)
     {
-        if (!strstr(Devices[i].name, "stylus") &&
-            !strstr(Devices[i].name, "eraser")) { continue; }
+        if( !strcasestr(Devices[i].name, "stylus") &&
+            !strcasestr(Devices[i].name, "eraser") &&
+            !strcasestr(Devices[i].name, "pen")) 
+        { 
+            continue; 
+        }
 
         EasyTab->Device = XOpenDevice(Disp, Devices[i].id);
         XAnyClassPtr ClassPtr = Devices[i].inputclassinfo;
