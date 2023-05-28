@@ -187,6 +187,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #ifdef __linux__
 #include <X11/extensions/XInput.h>
@@ -705,83 +706,136 @@ EasyTabResult EasyTab_Load(Display* Disp, Window Win)
 
     int32_t Count;
     XDeviceInfoPtr Devices = (XDeviceInfoPtr)XListInputDevices(Disp, &Count);
-    if (!Devices) { return EASYTAB_X11_ERROR; }
+    if (!Devices) 
+    {
+        printf("Failed to query input devices\n");
+        return EASYTAB_X11_ERROR; 
+    }
 
+    //Listing all devices name for debugging purpose
+    //for (int32_t i = 0; i < Count; i++)
+    //{
+    //    printf("Device id[%d]: %lu\n", i, Devices[i].id);
+    //    printf("Device type[%d]: %lu\n", i, Devices[i].type);
+    //    printf("Device name[%d]: %s\n", i, Devices[i].name);
+    //    printf("Device num_classes[%d]: %d\n", i, Devices[i].num_classes);
+    //    printf("Device use[%d]: %d\n\n", i, Devices[i].use);
+    //}
+    
+    int foundDevices = 0;
+    
     for (int32_t i = 0; i < Count; i++)
     {
-        if( !strcasestr(Devices[i].name, "stylus") &&
-            !strcasestr(Devices[i].name, "eraser") &&
-            !strcasestr(Devices[i].name, "pen")) 
-        { 
-            continue; 
-        }
+        //NOTE(Neko-box-coder): It seems like opening devices with type 0 will report error 
+        //                      and exit the program (using default error handling)
+        if(Devices[i].type == 0)
+            continue;
 
-        EasyTab->Device = XOpenDevice(Disp, Devices[i].id);
+        //NOTE(Neko-box-coder): The word "open" contains the word "pen",
+        //                      therefore using the words "tablet pen" to prevent ambiguity
+        //NOTE(Neko-box-coder): Name matching is not a bullet-proof approach, commented out for now just in case this is needed.
+        //if( !strcasestr(Devices[i].name, "stylus") &&
+        //    !strcasestr(Devices[i].name, "eraser") &&
+        //    !strcasestr(Devices[i].name, "tablet pen"))
+        //{ 
+        //    continue; 
+        //}
+
+        EasyTabInfo currentInfo = *EasyTab;
+        currentInfo.NumEventClasses = 0;
+        currentInfo.Device = XOpenDevice(Disp, Devices[i].id);
         XAnyClassPtr ClassPtr = Devices[i].inputclassinfo;
 
         for (int32_t j = 0; j < Devices[i].num_classes; j++)
         {
 #if defined(__cplusplus)
-            switch (ClassPtr->c_class)
+            if(ClassPtr->c_class == ValuatorClass)
 #else
-            switch (ClassPtr->class)
+            if(ClassPtr->class == ValuatorClass)
 #endif
             {
-                case ValuatorClass:
+                XValuatorInfo* info = (XValuatorInfo*)ClassPtr;
+                if (info->num_axes > 2 && info->axes[0].max_value > 0 && info->axes[1].max_value > 0 &&
+                    info->axes[2].max_value > 0)
                 {
-                    XValuatorInfo *Info = (XValuatorInfo *)ClassPtr;
+                    //printf("Found Device: %s\n", Devices[i].name);
+                
                     // X
-                    if (Info->num_axes > 0)
-                    {
-                        int32_t min     = Info->axes[0].min_value;
-                        EasyTab->RangeX = Info->axes[0].max_value;
-                        //printf("Max/min x values: %d, %d\n", min, EasyTab->RangeX); // TODO: Platform-print macro
-                    }
+                    int32_t min     = info->axes[0].min_value;
+                    currentInfo.RangeX = info->axes[0].max_value;
+                    //printf("Min/max x values: %d, %d\n", min, currentInfo.RangeX); // TODO: Platform-print macro
 
                     // Y
-                    if (Info->num_axes > 1)
-                    {
-                        int32_t min     = Info->axes[1].min_value;
-                        EasyTab->RangeY = Info->axes[1].max_value;
-                        //printf("Max/min y values: %d, %d\n", min, EasyTab->RangeY);
-                    }
-
+                    min     = info->axes[1].min_value;
+                    currentInfo.RangeY = info->axes[1].max_value;
+                    //printf("Min/max y values: %d, %d\n", min, currentInfo.RangeY);
+                    
                     // Pressure
-                    if (Info->num_axes > 2)
-                    {
-                        int32_t min          = Info->axes[2].min_value;
-                        EasyTab->MaxPressure = Info->axes[2].max_value;
-                        //printf("Max/min pressure values: %d, %d\n", min, EasyTab->MaxPressure);
-                    }
-
+                    min          = info->axes[2].min_value;
+                    currentInfo.MaxPressure = info->axes[2].max_value;
+                    //printf("Min/max pressure values: %d, %d\n", min, currentInfo.MaxPressure);
+                    
+                    (void)min;  //NOTE(Neko-box-coder): To avoid unused-but-set-variable warning
+                    
                     XEventClass EventClass;
-                    DeviceMotionNotify(EasyTab->Device, EasyTab->MotionType, EventClass);
+                    DeviceMotionNotify(currentInfo.Device, currentInfo.MotionType, EventClass);
                     if (EventClass)
                     {
-                        EasyTab->EventClasses[EasyTab->NumEventClasses] = EventClass;
-                        EasyTab->NumEventClasses++;
+                        currentInfo.EventClasses[currentInfo.NumEventClasses] = EventClass;
+                        currentInfo.NumEventClasses++;
                     }
-                } break;
+                    else
+                    {
+                        //TODO(Neko-box-coder): Add error handling
+                        printf("Failed to register event with DeviceMotionNotify\n");
+                    }
+                }
             }
 
             ClassPtr = (XAnyClassPtr) ((uint8_t*)ClassPtr + ClassPtr->length); // TODO: Access this as an array to avoid pointer arithmetic?
         }
 
-        XSelectExtensionEvent(Disp, Win, EasyTab->EventClasses, EasyTab->NumEventClasses);
+        if(currentInfo.NumEventClasses > 1)
+        {
+            printf("We have more than 1 event classes: %d\n", currentInfo.NumEventClasses);
+            printf("This might not work as expected\n");
+        }
+
+        if(currentInfo.NumEventClasses > 0)
+        {
+            *EasyTab = currentInfo;
+            foundDevices++;
+            XSelectExtensionEvent(Disp, Win, EasyTab->EventClasses, EasyTab->NumEventClasses);
+        }
+        else
+            XCloseDevice(Disp, currentInfo.Device);
     }
 
     XFreeDeviceList(Devices);
+    
+    if(foundDevices > 1)
+    {
+        printf("More than 1 tablet devices found, the last one is used instead\n");
+        printf("This might not work as expected\n");
+    }
 
     if (EasyTab->Device != 0) { return EASYTAB_OK; }
-    else                      { return EASYTAB_X11_ERROR; }
+    else                      
+    { 
+        printf("No device found\n");
+        return EASYTAB_X11_ERROR; 
+    }
 }
 
 EasyTabResult EasyTab_HandleEvent(XEvent* Event)
 {
-
     if (Event->type != EasyTab->MotionType) { return EASYTAB_EVENT_NOT_HANDLED; }
 
     XDeviceMotionEvent* MotionEvent = (XDeviceMotionEvent*)(Event);
+    
+    if(MotionEvent->deviceid != EasyTab->Device->device_id)
+        return EASYTAB_EVENT_NOT_HANDLED;
+    
     EasyTab->PosX     = MotionEvent->x;
     EasyTab->PosY     = MotionEvent->y;
     EasyTab->Pressure = (float)MotionEvent->axis_data[2] / (float)EasyTab->MaxPressure;
